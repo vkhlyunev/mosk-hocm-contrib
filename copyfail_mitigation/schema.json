@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "mitigate": {
+      "type": "boolean"
+    },
+    "revert": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "not": {
+        "properties": {
+          "mitigate": { "const": true },
+          "revert": { "const": true }
+        },
+        "required": ["mitigate", "revert"]
+      }
+    }
+  ]
+}

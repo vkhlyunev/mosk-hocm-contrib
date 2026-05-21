@@ -1,0 +1,95 @@
+---
+- name: Manage Copy Fail Vulnerability (CVE-2026-31431) Mitigation
+  hosts: all
+  become: true
+  tasks:
+    - name: Apply Copy Fail Mitigation
+      when:
+      - values.mitigate is defined
+      - values.mitigate
+      - not (values.revert | default(False))
+      block:
+        - name: Create persistent modprobe blacklist configuration
+          ansible.builtin.copy:
+            dest: /etc/modprobe.d/blacklist-algif_aead.conf
+            content: |
+              # Mitigate Copy Fail (CVE-2026-31431)
+              install algif_aead /bin/false
+            owner: root
+            group: root
+            mode: '0644'
+          register: blacklist_config
+
+        - name: Runtime unload module algif_aead
+          ansible.builtin.modprobe:
+            name: algif_aead
+            state: absent
+          register: unload_module
+          ignore_errors: true
+
+        - name: algif_aead module post-unload actions
+          when:
+            - (unload_module.changed or unload_module.failed)
+          block:
+          - name: Request a reboot
+            ansible.builtin.command: /bin/true
+            notify: "request reboot"
+            changed_when: true
+
+          - name: Flush page cache to purge volatile in-memory exploitation
+            ansible.builtin.shell: sync; echo 3 > /proc/sys/vm/drop_caches
+            when:
+              - unload_module.changed
+
+          - name: Create /root/.ansible/copyfail_mitigation
+            ansible.builtin.file:
+              path: /root/.ansible/copyfail_mitigation
+              state: directory
+
+          - name: Create /root/.ansible/copyfail_mitigation/load_algif_aead marker file
+            ansible.builtin.file:
+              path: /root/.ansible/copyfail_mitigation/load_algif_aead
+              state: touch
+
+    - name: Revert Copy Fail Mitigation
+      when:
+      - values.revert is defined
+      - values.revert
+      block:
+        - name: Remove persistent modprobe blacklist configuration
+          ansible.builtin.file:
+            path: /etc/modprobe.d/blacklist-algif_aead.conf
+            state: absent
+          register: remove_blacklist
+
+        - name: Check if algif_aead was loaded before HOC was executed first time
+          ansible.builtin.stat:
+            path: "/root/.ansible/copyfail_mitigation/load_algif_aead"
+          register: mitigation_marker
+
+        - name: Restore module to pre-mitigation state
+          when: mitigation_marker.stat.exists
+          block:
+          - name: Load the algif_aead module back into the live kernel
+            ansible.builtin.modprobe:
+              name: algif_aead
+              state: present
+
+          - name: Delete /root/.ansible/copyfail_mitigation
+            ansible.builtin.file:
+              path: /root/.ansible/copyfail_mitigation
+              state: absent
+
+  handlers:
+    - name: Create /run/day2
+      ansible.builtin.file:
+        path: /run/day2
+        state: directory
+      listen: "request reboot"
+
+    - name: Update /run/day2/reboot-required with reboot reason
+      ansible.builtin.lineinfile:
+        path: "/run/day2/reboot-required"
+        line: "Reboot is required by Copy-Fail mitigation HOCM"
+        create: true
+      listen: "request reboot"
